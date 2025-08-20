@@ -1,0 +1,44 @@
+services:
+  nginx:
+    image: nginx:1.29.0-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - cdn-network
+    depends_on:
+      - backend
+
+  backend:
+    build: .
+    hostname: backend
+    networks:
+      - cdn-network
+    volumes:
+      - ./uploads:/var/cdn/storage
+    environment:
+      POSTGRES_DB: cdn
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:13.18
+    restart: on-failure
+    environment:
+      POSTGRES_DB: cdn
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - cdn-network
+
+volumes:
+  pg_data: { }
+networks:
+  cdn-network: { }
