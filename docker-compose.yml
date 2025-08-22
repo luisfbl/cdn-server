@@ -13,6 +13,7 @@ services:
   backend:
     build: .
     hostname: backend
+    restart: on-failure
     networks:
       - cdn-network
     volumes:
@@ -23,7 +24,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   postgres:
     image: postgres:13.18
@@ -38,6 +40,11 @@ services:
       - "5432:5432"
     networks:
       - cdn-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pg_data: { }

@@ -31,14 +31,14 @@ async fn main() {
         }
         Err(e) => {
             eprintln!("Failed to connect to database: {}", e);
-            return;
+            std::process::exit(1);
         }
     };
 
     println!("Running migrations...");
     if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
         eprintln!("Failed to run migrations: {}", e);
-        return;
+        std::process::exit(1);
     };
     println!("Migrations completed successfully");
 
