@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use std::env;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -23,24 +24,30 @@ async fn main() {
         db_user, db_password, db_host, db_name
     );
 
-    println!("Connecting to database...");
-    let pool = match sqlx::PgPool::connect(&database_url).await {
-        Ok(pool) => {
-            println!("Database connection successful");
-            pool
-        }
-        Err(e) => {
-            eprintln!("Failed to connect to database: {}", e);
-            std::process::exit(1);
+    println!("Connecting to database at {}", database_url);
+    let pool = loop {
+        match sqlx::PgPool::connect(&database_url).await {
+            Ok(pool) => {
+                println!("✅ Database connection successful");
+                break pool;
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to connect to database: {}", e);
+                eprintln!("🔄 Retrying in 5 seconds...");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
         }
     };
 
-    println!("Running migrations...");
-    if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
-        eprintln!("Failed to run migrations: {}", e);
-        std::process::exit(1);
+    println!("🔄 Running database migrations...");
+    match sqlx::migrate!("./migrations").run(&pool).await {
+        Ok(_) => println!("✅ Migrations completed successfully"),
+        Err(e) => {
+            eprintln!("❌ Failed to run migrations: {}", e);
+            eprintln!("💀 Exiting...");
+            std::process::exit(1);
+        }
     };
-    println!("Migrations completed successfully");
 
     let app = Router::new()
         .route("/", get(serve_html))
@@ -49,15 +56,23 @@ async fn main() {
         .route("/documents/{id}", get(handlers::get_document))
         .with_state(pool);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .expect("Failed to bind to address");
+    let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
+        Ok(listener) => {
+            println!("🚀 CDN server running on http://0.0.0.0:3000");
+            listener
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to bind to port 3000: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    println!("CDN server running on http://0.0.0.0:3000");
-
-    axum::serve(listener, app)
-        .await
-        .expect("Failed to start server");
+    println!("🌟 Backend is ready to accept connections!");
+    
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("❌ Server error: {}", e);
+        std::process::exit(1);
+    }
 }
 
 async fn serve_html() -> Html<String> {
