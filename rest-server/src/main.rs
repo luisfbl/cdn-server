@@ -3,12 +3,26 @@ mod models;
 mod utils;
 
 use axum::{
-    Router,
+    Json, Router,
     response::Html,
     routing::{get, post},
 };
+use serde_json::json;
 use std::env;
 use std::time::Duration;
+
+async fn health_check() -> Json<serde_json::Value> {
+    let container_id = std::fs::read_to_string("/etc/hostname")
+        .unwrap_or_else(|_| "unknown".to_string())
+        .trim()
+        .to_string();
+
+    Json(json!({
+        "status": "healthy",
+        "container_id": container_id,
+        "service": "backend"
+    }))
+}
 
 #[tokio::main]
 async fn main() {
@@ -50,10 +64,10 @@ async fn main() {
     };
 
     let app = Router::new()
-        .route("/", get(serve_html))
-        .route("/documents", post(handlers::upload_document))
-        .route("/documents", get(handlers::list_documents))
-        .route("/documents/{id}", get(handlers::get_document))
+        .route("/api/documents", post(handlers::upload_document))
+        .route("/api/documents", get(handlers::list_documents))
+        .route("/api/documents/{id}", get(handlers::get_document))
+        .route("/api/health", get(health_check))
         .with_state(pool);
 
     let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
@@ -68,16 +82,9 @@ async fn main() {
     };
 
     println!("🌟 Backend is ready to accept connections!");
-    
+
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("❌ Server error: {}", e);
         std::process::exit(1);
-    }
-}
-
-async fn serve_html() -> Html<String> {
-    match tokio::fs::read_to_string("./static/index.html").await {
-        Ok(html) => Html(html),
-        Err(_) => Html("<h1>Erro ao carregar página</h1>".to_string())
     }
 }

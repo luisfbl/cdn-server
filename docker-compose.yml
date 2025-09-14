@@ -8,10 +8,18 @@ services:
     networks:
       - cdn-network
     depends_on:
+      - frontend
+      - backend
+
+  frontend:
+    build: web
+    networks:
+      - cdn-network
+    depends_on:
       - backend
 
   backend:
-    build: .
+    build: rest-server
     hostname: backend
     restart: on-failure
     networks:
@@ -48,6 +56,6 @@ services:
       retries: 5
 
 volumes:
-  pg_data: { }
+  pg_data: {}
 networks:
-  cdn-network: { }
+  cdn-network: {}

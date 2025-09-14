@@ -1,6 +1,11 @@
 use crate::models::{DocumentListItem, DocumentRecord};
 use crate::utils::calculate_hash;
-use axum::{Json, extract::{Multipart, Path, State}, http::StatusCode, response::Response};
+use axum::{
+    Json,
+    extract::{Multipart, Path, State},
+    http::StatusCode,
+    response::Response,
+};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::fs;
@@ -135,17 +140,17 @@ pub async fn list_documents(
 ) -> Result<Json<Vec<DocumentListItem>>, StatusCode> {
     let documents = sqlx::query_as::<_, DocumentListItem>(
         r#"
-        SELECT 
-            d.id, 
-            d.hash, 
-            d.file_size, 
-            d.mime_type, 
+        SELECT
+            d.id,
+            d.hash,
+            d.file_size,
+            d.mime_type,
             COALESCE(dd.created_at, d.created_at) as created_at,
             dd.description
         FROM documents d
         LEFT JOIN document_descriptions dd ON d.id = dd.document_id
         ORDER BY COALESCE(dd.created_at, d.created_at) DESC
-        "#
+        "#,
     )
     .fetch_all(&pool)
     .await
