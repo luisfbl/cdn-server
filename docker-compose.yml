@@ -43,8 +43,10 @@ services:
       - AWS_DEFAULT_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
+      - PERSISTENCE=1
     volumes:
       - "localstack_data:/var/lib/localstack"
+      - "./init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh"
     networks:
       - cdn-network
     healthcheck:

@@ -25,8 +25,6 @@ async fn health_check() -> Json<serde_json::Value> {
 
 #[tokio::main]
 async fn main() {
-    std::thread::sleep(std::time::Duration::from_secs(10));
-
     let aws_clients = Arc::new(aws_client::AwsClients::new().await);
 
     let app = Router::new()
@@ -38,16 +36,16 @@ async fn main() {
 
     let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
         Ok(listener) => {
-            println!("🚀 CDN server running on http://0.0.0.0:3000");
+            println!("CDN server running on http://0.0.0.0:3000");
             listener
         }
         Err(e) => {
-            eprintln!("❌ Failed to bind to port 3000: {}", e);
+            eprintln!("Failed to bind to port 3000: {}", e);
             std::process::exit(1);
         }
     };
 
-    println!("🌟 Backend is ready to accept connections!");
+    println!("Backend is ready to accept connections!");
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("❌ Server error: {}", e);

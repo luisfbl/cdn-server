@@ -73,7 +73,10 @@ impl AwsClients {
             .key(key)
             .send()
             .await
-            .map_err(|e| format!("S3 get error: {}", e))?;
+            .map_err(|e| {
+                eprintln!("S3 get error details: bucket={}, key={}, error={}", bucket, key, e);
+                format!("S3 get error: {}", e)
+            })?;
 
         let data = output
             .body
