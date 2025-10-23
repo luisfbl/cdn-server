@@ -1,4 +1,5 @@
-use crate::models::{DocumentListItem, DocumentRecord};
+use crate::aws_client::AwsClients;
+use crate::models::{DocumentListItem};
 use crate::utils::calculate_hash;
 use axum::{
     Json,
@@ -6,20 +7,17 @@ use axum::{
     http::StatusCode,
     response::Response,
 };
-use sqlx::PgPool;
+use bytes::Bytes;
 use std::collections::HashMap;
-use std::fs;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use std::sync::Arc;
 
 pub async fn upload_document(
-    State(pool): State<PgPool>,
+    State(aws_clients): State<Arc<AwsClients>>,
     mut multipart: Multipart,
 ) -> Result<Json<HashMap<String, String>>, StatusCode> {
     let mut file_data = Vec::new();
     let mut description = String::new();
-    let mut filename = String::new();
-    let mut content_type = String::new();
+    let mut content_type = String::from("application/octet-stream");
 
     while let Some(field) = multipart
         .next_field()
@@ -30,7 +28,6 @@ pub async fn upload_document(
 
         match name.as_str() {
             "file" => {
-                filename = field.file_name().unwrap_or("unknown").to_string();
                 content_type = field
                     .content_type()
                     .unwrap_or("application/octet-stream")
@@ -53,108 +50,145 @@ pub async fn upload_document(
     }
 
     let hash = calculate_hash(&file_data);
+    let size = file_data.len();
 
-    let existing_document = sqlx::query_as::<_, DocumentRecord>(
-        "SELECT id, hash, file_path, file_size, mime_type FROM documents WHERE hash = $1",
-    )
-    .bind(hash.clone())
-    .fetch_optional(&pool)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let file_id = hash.clone();
 
-    let document_id = if let Some(existing) = existing_document {
-        existing.id
+    let existing = aws_clients
+        .get_file_metadata(&file_id)
+        .await
+        .map_err(|e| {
+            eprintln!("DynamoDB get error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let document_id = if existing.is_some() {
+        file_id.clone()
     } else {
-        let storage_dir = "/var/cdn/storage";
-        fs::create_dir_all(storage_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let bucket = "ingestor-processed";
+        let file_key = format!("documents/{}", &hash);
 
-        let file_extension = std::path::Path::new(&filename)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("bin");
-
-        let file_path = format!("{storage_dir}/{hash}.{file_extension}");
-
-        let mut file = File::create(&file_path)
+        let etag = aws_clients
+            .upload_to_s3(bucket, &file_key, Bytes::from(file_data), &content_type)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        file.write_all(&file_data)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| {
+                eprintln!("S3 upload error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
-        sqlx::query_scalar("INSERT INTO documents (hash, file_path, file_size, mime_type) VALUES ($1, $2, $3, $4) RETURNING id")
-            .bind(hash.clone())
-            .bind(file_path)
-            .bind(file_data.len() as i32)
-            .bind(content_type)
-            .fetch_one(&pool)
+        aws_clients
+            .put_file_metadata_with_description(
+                &file_id,
+                &file_key,
+                bucket,
+                size as i64,
+                &etag,
+                &hash,
+                &content_type,
+                "PROCESSED",
+                if description.is_empty() { None } else { Some(&description) },
+            )
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                eprintln!("DynamoDB put error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        file_id
     };
 
-    if !description.is_empty() {
-        sqlx::query("INSERT INTO document_descriptions (document_id, description) VALUES ($1, $2)")
-            .bind(document_id)
-            .bind(description)
-            .execute(&pool)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
-
     let mut response = HashMap::new();
-    response.insert("id".to_string(), document_id.to_string());
+    response.insert("id".to_string(), document_id.clone());
     response.insert("hash".to_string(), hash);
 
     Ok(Json(response))
 }
 
 pub async fn get_document(
-    State(pool): State<PgPool>,
+    State(aws_clients): State<Arc<AwsClients>>,
     Path(id): Path<String>,
 ) -> Result<Response, StatusCode> {
-    let document_id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let document = sqlx::query_as::<_, DocumentRecord>(
-        "SELECT id, hash, file_path, file_size, mime_type FROM documents WHERE id = $1",
-    )
-    .bind(document_id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
-
-    let file_data = tokio::fs::read(&document.file_path)
+    let metadata = aws_clients
+        .get_file_metadata(&id)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|e| {
+            eprintln!("DynamoDB get error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let bucket = metadata
+        .get("bucket")
+        .and_then(|v| v.as_s().ok())
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let key = metadata
+        .get("key")
+        .and_then(|v| v.as_s().ok())
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mime_type = metadata
+        .get("contentType")
+        .and_then(|v| v.as_s().ok())
+        .map(|s| s.as_str())
+        .unwrap_or("application/octet-stream");
+
+    let file_data = aws_clients
+        .get_from_s3(bucket, key)
+        .await
+        .map_err(|e| {
+            eprintln!("S3 get error: {}", e);
+            StatusCode::NOT_FOUND
+        })?;
 
     Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", document.mime_type)
+        .header("Content-Type", mime_type)
         .header("Cache-Control", "public, max-age=31536000")
-        .body(file_data.into())
+        .body(file_data.to_vec().into())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub async fn list_documents(
-    State(pool): State<PgPool>,
+    State(aws_clients): State<Arc<AwsClients>>,
 ) -> Result<Json<Vec<DocumentListItem>>, StatusCode> {
-    let documents = sqlx::query_as::<_, DocumentListItem>(
-        r#"
-        SELECT
-            d.id,
-            d.hash,
-            d.file_size,
-            d.mime_type,
-            COALESCE(dd.created_at, d.created_at) as created_at,
-            dd.description
-        FROM documents d
-        LEFT JOIN document_descriptions dd ON d.id = dd.document_id
-        ORDER BY COALESCE(dd.created_at, d.created_at) DESC
-        "#,
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = aws_clients
+        .scan_files(Some(100))
+        .await
+        .map_err(|e| {
+            eprintln!("DynamoDB scan error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let documents: Vec<DocumentListItem> = items
+        .iter()
+        .filter_map(|item| {
+            Some(DocumentListItem {
+                id: item.get("pk").and_then(|v| v.as_s().ok())?.to_string(),
+                hash: item.get("checksum").and_then(|v| v.as_s().ok())?.to_string(),
+                file_size: item
+                    .get("size")
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0),
+                mime_type: item
+                    .get("contentType")
+                    .and_then(|v| v.as_s().ok())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "application/octet-stream".to_string()),
+                created_at: item
+                    .get("processedAt")
+                    .and_then(|v| v.as_s().ok())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now),
+                description: item
+                    .get("description")
+                    .and_then(|v| v.as_s().ok())
+                    .map(|s| s.to_string()),
+            })
+        })
+        .collect();
 
     Ok(Json(documents))
 }

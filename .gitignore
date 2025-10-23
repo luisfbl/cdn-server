@@ -136,3 +136,12 @@ uploads
 **/.svelte-kit/
 package
 **/node_modules
+
+### LocalStack ###
+# Lambda deployment packages
+lambda/**/*.zip
+*.zip
+
+# Temporary test files
+/tmp/
+*.tmp

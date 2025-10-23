@@ -24,38 +24,36 @@ services:
     restart: on-failure
     networks:
       - cdn-network
-    volumes:
-      - ./uploads:/var/cdn/storage
     environment:
-      POSTGRES_DB: cdn
-      POSTGRES_HOST: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      RUST_LOG: TRACE
+      RUST_LOG: INFO
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     depends_on:
-      postgres:
+      localstack:
         condition: service_healthy
 
-  postgres:
-    image: postgres:13.18
-    restart: on-failure
-    environment:
-      POSTGRES_DB: cdn
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    volumes:
-      - pg_data:/var/lib/postgresql/data
+  localstack:
+    image: localstack/localstack:3.8.1
     ports:
-      - "5432:5432"
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,dynamodb
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    volumes:
+      - "localstack_data:/var/lib/localstack"
     networks:
       - cdn-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
-  pg_data: {}
+  localstack_data: {}
 networks:
   cdn-network: {}
