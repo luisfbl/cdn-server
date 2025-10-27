@@ -1,94 +1,94 @@
-# CDN Server - Docker Swarm
+# File Ingestor - LocalStack Pipeline
 
-Sistema de CDN distribuído utilizando Docker Swarm para demonstrar balanceamento de carga e escalabilidade horizontal.
+Sistema de ingestão de arquivos utilizando LocalStack com S3, DynamoDB, Lambda e API Gateway.
+
+## Arquitetura
+
+Pipeline serverless para processamento de arquivos:
+1. Upload via API Gateway → Lambda Upload → S3 (ingestor-raw)
+2. S3 Trigger → Lambda Ingest → S3 (ingestor-processed) + DynamoDB
+3. Consulta via API Gateway → Lambda Get/List → DynamoDB + S3
 
 ## Pré-requisitos
 
-- Docker instalado
-- Portas 8080, 9000 e 8000 disponíveis
+- Docker e Docker Compose instalados
+- Porta 8080 e 4566 disponíveis
 
-## Inicialização do Docker Swarm
+## Inicialização
 
-### 1. Inicializar o Swarm
+### 1. Subir os serviços
 ```bash
-docker swarm init
+docker compose up -d
 ```
 
-### 2. Construir as Imagens
+### 2. Aguardar inicialização (aproximadamente 30 segundos)
 ```bash
-docker build -t cdn-frontend:latest ./web
-
-docker build -t cdn-backend:latest ./rest-server
+docker logs cdn-server-localstack-1 --follow
 ```
 
-### 3. Deploy da Stack
+## Estrutura dos Recursos AWS
+
+### S3 Buckets
+- `ingestor-raw`: Bucket de entrada para arquivos
+- `ingestor-processed`: Bucket de saída com arquivos processados
+
+### DynamoDB Table: files
+- **PK**: `pk` (string) - Checksum SHA256 do arquivo
+- **Atributos**: bucket, key, size, etag, status, contentType, processedAt, checksum
+
+### Lambda Functions
+- `upload`: Recebe arquivo via API Gateway e salva no bucket raw
+- `file-ingestor`: Processa arquivo (trigger S3), calcula checksum, move para processed
+- `list-files`: Lista arquivos com filtros opcionais (status, from/to)
+- `get-file`: Retorna arquivo por ID (checksum)
+
+### API Gateway
+- `POST /files`: Upload de arquivo
+- `GET /files`: Lista arquivos (query params: status, from, to)
+- `GET /files/{id}`: Obtém arquivo por ID
+
+## Testando o Pipeline
+
+### 1. Executar arquivo de teste
 ```bash
-docker stack deploy -c docker-swarm.yml cdn-stack
+./test-pipeline.sh
 ```
 
-## Verificação dos Serviços
+O API_ID pode ser obtido dos logs do LocalStack.
 
-### Listar serviços
+### 2. Verificar processamento
 ```bash
-docker service ls
+docker exec cdn-server-localstack-1 awslocal s3 ls s3://ingestor-raw/ --recursive
+
+docker exec cdn-server-localstack-1 awslocal s3 ls s3://ingestor-processed/processed/
+
+docker exec cdn-server-localstack-1 awslocal dynamodb scan --table-name files --region us-east-1
 ```
 
-### Verificar réplicas de um serviço
+### 3. Listar arquivos via API
 ```bash
-docker service ps cdn-stack_frontend
-docker service ps cdn-stack_backend
+curl "http://localhost:8080/api/documents" | jq
+
+curl "http://localhost:8080/api/documents?status=PROCESSED" | jq
+
+curl "http://localhost:8080/api/documents?from=2025-01-01T00:00:00Z" | jq
 ```
 
-## Comandos de Scaling
-
-### Escalar frontend para 5 réplicas
+### 4. Obter arquivo por ID
 ```bash
-docker service scale cdn-stack_frontend=5
+# Substitua {id} pelo checksum retornado no upload
+curl "http://localhost:8080/api/documents/{id}" --output arquivo.txt
 ```
 
-### Escalar backend para 4 réplicas
-```bash
-docker service scale cdn-stack_backend=4
-```
+## Comandos Úteis
 
-### Reduzir frontend para 2 réplicas
+### Parar e remover tudo
 ```bash
-docker service scale cdn-stack_frontend=2
+docker compose down
 ```
 
 ## Acesso à Aplicação
 
 - **Frontend**: http://localhost:8080
-- **Portainer**: http://localhost:9000
-
-## Demonstração de Load Balancing
-
-1. Acesse o frontend em http://localhost:8080
-2. Abra o console do navegador (F12)
-3. Recarregue a página várias vezes
-4. Observe que o "Frontend Container ID" muda, demonstrando o balanceamento entre as réplicas
-
-## Comandos Úteis
-
-### Atualizar um serviço
-```bash
-docker service update --force cdn-stack_frontend
-```
-
-### Remover a stack
-```bash
-docker stack rm cdn-stack
-```
-
-### Sair do modo Swarm
-```bash
-docker swarm leave --force
-```
-
-## Estrutura da Aplicação
-
-- **Frontend**: Aplicação SvelteKit que exibe arquivos e permite upload
-- **Backend**: API REST em Rust para gerenciamento de arquivos
-- **Postgres**: Banco de dados para metadados
-- **Nginx**: Load balancer e proxy reverso
-- **Portainer**: Interface web para gerenciamento do Docker
+- **LocalStack**: http://localhost:4566
+- **LocalStack Health**: http://localhost:4566/_localstack/health

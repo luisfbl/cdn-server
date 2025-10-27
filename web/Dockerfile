@@ -15,10 +15,15 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN npm install -g serve
-
+# Copy the built application
 COPY --from=builder /app/build ./build
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/node_modules ./node_modules
 
 EXPOSE 3001
 
-CMD ["sh", "-c", "echo \"window.CONTAINER_ID = '$(hostname)';\" > /app/build/container-id.js && serve -s build -l 3001"]
+ENV PORT=3001
+ENV HOST=0.0.0.0
+
+# Run the SvelteKit Node server
+CMD ["sh", "-c", "echo \"window.CONTAINER_ID = '$(hostname)';\" > /app/build/client/container-id.js && node build/index.js"]
